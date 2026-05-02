@@ -1,6 +1,7 @@
 const CACHE = 'lhc-worship-shell-v1';
-const REQUIRED = ['/index.html', '/manifest.json'];
-const OPTIONAL = ['/icons/icon.svg', '/icons/icon-192.png', '/icons/icon-512.png', '/icons/apple-touch-icon.png'];
+const BASE = '/LHC-Worship-App';
+const REQUIRED = [BASE + '/index.html', BASE + '/manifest.json'];
+const OPTIONAL = [BASE + '/icons/icon.svg', BASE + '/icons/icon-192.png', BASE + '/icons/icon-512.png', BASE + '/icons/apple-touch-icon.png'];
 
 self.addEventListener('install', e => {
   e.waitUntil(
@@ -29,7 +30,7 @@ self.addEventListener('fetch', e => {
   e.respondWith(
     caches.match(e.request).then(hit => {
       if (hit) return hit;
-      return fetch(e.request).catch(() => caches.match('/index.html'));
+      return fetch(e.request).catch(() => caches.match(BASE + '/index.html'));
     })
   );
 });

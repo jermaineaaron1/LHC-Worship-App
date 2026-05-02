@@ -2,8 +2,8 @@
   "name": "LHC Worship Prep",
   "short_name": "LHC Worship",
   "description": "Worship preparation and service planning for Luther House Chapel",
-  "start_url": "/?source=pwa",
-  "scope": "/",
+  "start_url": "/LHC-Worship-App/?source=pwa",
+  "scope": "/LHC-Worship-App/",
   "display": "standalone",
   "background_color": "#4a6da7",
   "theme_color": "#4a6da7",
@@ -30,7 +30,7 @@
     }
   ],
   "share_target": {
-    "action": "/",
+    "action": "/LHC-Worship-App/",
     "method": "GET",
     "enctype": "application/x-www-form-urlencoded",
     "params": {
@@ -43,19 +43,19 @@
     {
       "name": "New Worship Order",
       "short_name": "New Order",
-      "url": "/?view=worshipOrder",
+      "url": "/LHC-Worship-App/?view=worshipOrder",
       "icons": [{ "src": "icons/icon.svg", "sizes": "any" }]
     },
     {
       "name": "Song Library",
       "short_name": "Songs",
-      "url": "/?view=songs",
+      "url": "/LHC-Worship-App/?view=songs",
       "icons": [{ "src": "icons/icon.svg", "sizes": "any" }]
     },
     {
       "name": "Roster",
       "short_name": "Roster",
-      "url": "/?view=roster",
+      "url": "/LHC-Worship-App/?view=roster",
       "icons": [{ "src": "icons/icon.svg", "sizes": "any" }]
     }
   ],
