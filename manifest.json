@@ -32,17 +32,11 @@
   "share_target": {
     "action": "/LHC-Worship-App/share-handler",
     "method": "POST",
-    "enctype": "multipart/form-data",
+    "enctype": "application/x-www-form-urlencoded",
     "params": {
       "title": "share_title",
       "text":  "share_text",
-      "url":   "share_url",
-      "files": [
-        {
-          "name": "share_files",
-          "accept": ["image/*", "audio/*", "video/*", "application/pdf"]
-        }
-      ]
+      "url":   "share_url"
     }
   },
   "shortcuts": [
