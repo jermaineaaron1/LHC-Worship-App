@@ -224,7 +224,11 @@
     if (!isHashWake) {
       // Normal load: set iframe src and show splash
       frame.src = buildGasUrl();
-      if (isShare) showStatus('Opening worship order…', 'info');
+      if (isShare) {
+      showStatus('Opening worship order…', 'info');
+      // Fallback: hide status after 6 s even if lhc-share-received never arrives
+      setTimeout(function() { statusBar.style.display = 'none'; }, 6000);
+    }
     } else {
       // Hash-wake: iframe is already live, no splash needed
       splash.classList.add('fade-out');
