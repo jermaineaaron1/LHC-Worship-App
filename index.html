@@ -83,6 +83,51 @@
       border: none;
       background: #f4f5fb;
     }
+
+    /* ── Install prompt banner ───────────────────────────────────────── */
+    #installBanner {
+      display: none;
+      position: fixed; bottom: 0; left: 0; right: 0;
+      padding: 12px 16px;
+      padding-bottom: calc(12px + env(safe-area-inset-bottom));
+      background: #1e3a5f;
+      color: #fff;
+      z-index: 300;
+      align-items: center; gap: 12px;
+      box-shadow: 0 -2px 12px rgba(0,0,0,.25);
+    }
+    #installBanner.visible { display: flex; }
+    .install-icon {
+      width: 40px; height: 40px; flex-shrink: 0;
+      background: rgba(255,255,255,.15); border-radius: 10px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 1.3rem;
+    }
+    .install-text { flex: 1; min-width: 0; }
+    .install-text strong { display: block; font-size: .88rem; }
+    .install-text span { font-size: .73rem; color: rgba(255,255,255,.7); }
+    .install-btn {
+      background: #4a6da7; color: #fff; border: none;
+      border-radius: 8px; padding: 8px 14px;
+      font-size: .82rem; font-weight: 700; cursor: pointer;
+      flex-shrink: 0; white-space: nowrap;
+    }
+    .install-dismiss {
+      background: none; border: none; color: rgba(255,255,255,.55);
+      font-size: 1.1rem; cursor: pointer; flex-shrink: 0; padding: 4px;
+    }
+
+    /* ── SW update banner ────────────────────────────────────────────── */
+    #updateBanner {
+      display: none;
+      position: fixed; top: 0; left: 0; right: 0;
+      padding: 10px 16px;
+      padding-top: calc(10px + env(safe-area-inset-top));
+      background: #0d9488; color: #fff;
+      font-size: .82rem; text-align: center;
+      z-index: 185; cursor: pointer;
+    }
+    #updateBanner.visible { display: block; }
   </style>
 </head>
 <body>
@@ -107,6 +152,22 @@
   <!-- ── Status bar ─────────────────────────────────────────────────── -->
   <div id="statusBar"></div>
 
+  <!-- ── SW update nudge ────────────────────────────────────────────── -->
+  <div id="updateBanner" onclick="applySwUpdate()">
+    New version available — tap to reload
+  </div>
+
+  <!-- ── Install prompt ─────────────────────────────────────────────── -->
+  <div id="installBanner">
+    <div class="install-icon">⛪</div>
+    <div class="install-text">
+      <strong>Add to Home Screen</strong>
+      <span>Required so YouTube can share directly to this app</span>
+    </div>
+    <button class="install-btn" onclick="triggerInstall()">Install</button>
+    <button class="install-dismiss" onclick="dismissInstall()" title="Dismiss">✕</button>
+  </div>
+
   <!-- ── GAS app iframe ─────────────────────────────────────────────── -->
   <iframe
     id="appFrame"
@@ -118,9 +179,11 @@
     // ── CONFIG ────────────────────────────────────────────────────────
     const GAS_URL = 'https://script.google.com/macros/s/AKfycbxsDkOtx25DrSROQg_eVR33RdQdPbFB3NGfhWqkCC3YIw2LLXRBKdfPaA77ljSmtpjU/exec';
 
-    const frame     = document.getElementById('appFrame');
-    const splash    = document.getElementById('splash');
-    const statusBar = document.getElementById('statusBar');
+    const frame        = document.getElementById('appFrame');
+    const splash       = document.getElementById('splash');
+    const statusBar    = document.getElementById('statusBar');
+    const installBanner = document.getElementById('installBanner');
+    const updateBanner  = document.getElementById('updateBanner');
 
     function showStatus(msg, type) {
       statusBar.textContent = msg;
@@ -130,139 +193,201 @@
 
     // ── Parse URL params ──────────────────────────────────────────────
     const params = new URLSearchParams(window.location.search);
-
-    // URL / text share (GET, from share-handler redirect)
     const shareUrl   = params.get('share_url')   || '';
     const shareTitle = params.get('share_title') || '';
     const shareText  = params.get('share_text')  || '';
-
-    // File share (GET redirect from service worker after POST)
-    const shareFile  = params.get('shareFile')  || '';   // '1' if a file was shared
-    const shareName  = params.get('shareName')  || '';
-    const shareType  = params.get('shareType')  || '';
+    const shareFile  = params.get('shareFile')   || '';
+    const shareName  = params.get('shareName')   || '';
+    const shareType  = params.get('shareType')   || '';
     const shareFileTitleParam = params.get('shareTitle') || '';
-
     const isShare = !!(shareUrl || shareFile);
 
-    // ── Build the GAS URL, forwarding deep-link params ────────────────
+    // ── Build GAS URL ─────────────────────────────────────────────────
     function buildGasUrl() {
       const url = new URL(GAS_URL);
-
-      // URL shares: inject shareInbox params so GAS can also read them
       if (shareUrl)   url.searchParams.set('shareInbox', shareUrl);
       if (shareTitle) url.searchParams.set('shareTitle', shareTitle);
       if (shareText)  url.searchParams.set('shareText',  shareText);
-
-      // For shares, always land on the Orders view
-      if (isShare) url.searchParams.set('view', 'worshipOrderView');
-
-      // Forward existing deep-link params transparently
+      if (isShare)    url.searchParams.set('view', 'worshipOrderView');
       ['order','date','dname','song','playlist','sb','media'].forEach(key => {
         if (params.has(key)) url.searchParams.set(key, params.get(key));
       });
-      // Forward non-share view params if no share is happening
       if (!isShare && params.has('view')) url.searchParams.set('view', params.get('view'));
-
       return url.toString();
     }
 
-    // ── Load the app ──────────────────────────────────────────────────
     frame.src = buildGasUrl();
+    if (isShare) showStatus('Opening worship order…', 'info');
 
-    if (isShare) showStatus('Sharing to your worship order…', 'info');
-
-    // ── Relay share data into the GAS iframe via postMessage ──────────
-    // Runs after iframe loads; retries until GAS app is ready.
+    // ── Relay share into GAS iframe via postMessage ───────────────────
+    // The GAS app signals readiness with lhc-app-ready; we also retry
+    // on a short interval in case the message arrives before the signal.
     function relayShareToFrame(shareData) {
       if (!shareData) return;
-      var attempts = 0;
-      var relay = setInterval(function() {
+      let attempts = 0;
+      let gasReady = false;
+
+      // Start retrying immediately
+      const relay = setInterval(() => {
         attempts++;
-        if (attempts > 30) { clearInterval(relay); return; }
+        if (attempts > 40) { clearInterval(relay); return; }
         try { frame.contentWindow.postMessage(shareData, '*'); } catch(e) {}
-      }, 1200);
-      // Stop retrying once GAS app acknowledges
-      window.addEventListener('message', function ack(ev) {
+      }, 1000);
+
+      // Once GAS app signals ready, send immediately and stop interval
+      window.addEventListener('message', function onReady(ev) {
+        if (ev.data && ev.data.type === 'lhc-app-ready' && !gasReady) {
+          gasReady = true;
+          try { frame.contentWindow.postMessage(shareData, '*'); } catch(e) {}
+        }
         if (ev.data && ev.data.type === 'lhc-share-received') {
           clearInterval(relay);
-          window.removeEventListener('message', ack);
+          window.removeEventListener('message', onReady);
           statusBar.style.display = 'none';
         }
       });
     }
 
-    // ── After iframe loads, determine what to relay ───────────────────
+    // ── After iframe loads, dispatch share payload ────────────────────
     frame.addEventListener('load', async () => {
       setTimeout(async () => {
         splash.classList.add('fade-out');
         if (!isShare) { statusBar.style.display = 'none'; return; }
 
         if (shareFile) {
-          // File share — retrieve from service worker cache
           try {
             const res      = await fetch('/LHC-Worship-App/pending-share-file');
             const fileData = await res.json();
-            if (fileData) {
-              relayShareToFrame({
-                type:  'lhc-share-file',
-                name:  fileData.name,
-                mimeType: fileData.type,
-                size:  fileData.size,
-                title: fileData.title,
-                data:  fileData.data,     // data URL (base64) or null if too large
-                addedAt: fileData.addedAt
-              });
-            } else {
-              // Fallback: relay just the metadata we have from URL params
-              relayShareToFrame({
-                type:  'lhc-share-file',
-                name:  shareName,
-                mimeType: shareType,
-                title: shareFileTitleParam || shareName,
-                data:  null
-              });
-            }
-          } catch(e) {
-            relayShareToFrame({
-              type:  'lhc-share-file',
-              name:  shareName,
-              mimeType: shareType,
-              title: shareFileTitleParam || shareName,
-              data:  null
+            relayShareToFrame(fileData ? {
+              type: 'lhc-share-file', name: fileData.name, mimeType: fileData.type,
+              size: fileData.size, title: fileData.title, data: fileData.data,
+              addedAt: fileData.addedAt
+            } : {
+              type: 'lhc-share-file', name: shareName, mimeType: shareType,
+              title: shareFileTitleParam || shareName, data: null
             });
+          } catch(e) {
+            relayShareToFrame({ type: 'lhc-share-file', name: shareName,
+              mimeType: shareType, title: shareFileTitleParam || shareName, data: null });
           }
         } else if (shareUrl) {
-          relayShareToFrame({
-            type:  'lhc-share-inbox',
-            url:   shareUrl,
-            title: shareTitle,
-            text:  shareText
-          });
+          relayShareToFrame({ type: 'lhc-share-inbox', url: shareUrl,
+            title: shareTitle, text: shareText });
         }
-      }, 350);
+      }, 300);
     });
 
-    // Hard timeout fallback
-    setTimeout(() => splash.classList.add('fade-out'), 9000);
+    // Hard timeout fallback for splash
+    setTimeout(() => splash.classList.add('fade-out'), 10000);
 
-    // ── Offline detection ─────────────────────────────────────────────
-    window.addEventListener('offline', () => showStatus('You are offline. Some features may not be available.'));
-    window.addEventListener('online',  () => { statusBar.style.display = 'none'; });
-
-    // ── Messages from the GAS iframe ─────────────────────────────────
+    // ── Messages from GAS iframe ──────────────────────────────────────
     window.addEventListener('message', (event) => {
       if (!event.origin.includes('script.google.com') &&
           !event.origin.includes('googleusercontent.com')) return;
       const d = event.data;
       if (!d || typeof d !== 'object') return;
-      if (d.type === 'lhc-title')       document.title = d.title || 'LHC Worship Prep';
-      if (d.type === 'lhc-status')      showStatus(d.message, d.level);
+      if (d.type === 'lhc-title')        document.title = d.title || 'LHC Worship Prep';
+      if (d.type === 'lhc-status')       showStatus(d.message, d.level);
       if (d.type === 'lhc-status-clear') statusBar.style.display = 'none';
     });
 
-    // ── Service worker registration ───────────────────────────────────
+    // ── Offline detection ─────────────────────────────────────────────
+    window.addEventListener('offline', () => showStatus('You are offline — some features unavailable.'));
+    window.addEventListener('online',  () => { statusBar.style.display = 'none'; });
+
+    // ── Install prompt ────────────────────────────────────────────────
+    let _deferredInstallPrompt = null;
+
+    // Show banner if not already installed and not dismissed in this session
+    window.addEventListener('beforeinstallprompt', (e) => {
+      e.preventDefault();
+      _deferredInstallPrompt = e;
+      if (!sessionStorage.getItem('lhc-install-dismissed')) {
+        installBanner.classList.add('visible');
+      }
+    });
+
+    // Hide banner if the user installs via OS prompt (not our button)
+    window.addEventListener('appinstalled', () => {
+      installBanner.classList.remove('visible');
+      _deferredInstallPrompt = null;
+    });
+
+    function triggerInstall() {
+      if (!_deferredInstallPrompt) return;
+      _deferredInstallPrompt.prompt();
+      _deferredInstallPrompt.userChoice.then(({ outcome }) => {
+        installBanner.classList.remove('visible');
+        _deferredInstallPrompt = null;
+      });
+    }
+
+    function dismissInstall() {
+      sessionStorage.setItem('lhc-install-dismissed', '1');
+      installBanner.classList.remove('visible');
+    }
+
+    // ── SW registration, update detection, keepalive ─────────────────
+    let _swRegistration = null;
+
+    function applySwUpdate() {
+      if (_swRegistration && _swRegistration.waiting) {
+        _swRegistration.waiting.postMessage({ type: 'skipWaiting' });
+      }
+      updateBanner.classList.remove('visible');
+      location.reload();
+    }
+
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('/LHC-Worship-App/sw.js').catch(() => {});
+      navigator.serviceWorker.register('/LHC-Worship-App/sw.js', { scope: '/LHC-Worship-App/' })
+        .then(reg => {
+          _swRegistration = reg;
+
+          // Detect when a new SW is waiting (user needs to reload to get update)
+          reg.addEventListener('updatefound', () => {
+            const newWorker = reg.installing;
+            if (!newWorker) return;
+            newWorker.addEventListener('statechange', () => {
+              if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+                updateBanner.classList.add('visible');
+              }
+            });
+          });
+
+          // Register Periodic Background Sync (keeps SW in OS share target registry)
+          if ('periodicSync' in reg) {
+            Notification.requestPermission().then(() => {}).catch(() => {});
+            reg.periodicSync.register('lhc-heartbeat', {
+              minInterval: 24 * 60 * 60 * 1000  // once a day
+            }).catch(() => {});
+          }
+        })
+        .catch(() => {});
+
+      // Reload automatically when a new SW takes control
+      navigator.serviceWorker.addEventListener('controllerchange', () => {
+        if (document._swUpdating) return;
+        document._swUpdating = true;
+        location.reload();
+      });
+
+      // ── SW keepalive: ping the SW whenever the tab is visible ─────────
+      // Receiving messages prevents the OS from killing an idle SW, which
+      // ensures the app stays registered in the share target list.
+      function pingSW() {
+        if (!navigator.serviceWorker.controller) return;
+        const ch = new MessageChannel();
+        navigator.serviceWorker.controller.postMessage({ type: 'ping' }, [ch.port2]);
+      }
+
+      // Ping on page load and whenever the user switches back to the app
+      pingSW();
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') pingSW();
+      });
+
+      // Ping every 20 minutes so the SW stays registered while the tab is open
+      setInterval(pingSW, 20 * 60 * 1000);
     }
   </script>
 </body>
