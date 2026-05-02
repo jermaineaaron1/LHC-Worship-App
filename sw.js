@@ -1,10 +1,10 @@
-const CACHE       = 'lhc-worship-shell-v3';
-const DATA_CACHE  = 'lhc-pending-data';
-const BASE        = '/LHC-Worship-App';
-const REQUIRED    = [BASE + '/index.html', BASE + '/manifest.json'];
-const OPTIONAL    = [BASE + '/icons/icon.svg', BASE + '/icons/icon-192.png', BASE + '/icons/icon-512.png', BASE + '/icons/apple-touch-icon.png'];
+const CACHE      = 'lhc-worship-shell-v4';
+const DATA_CACHE = 'lhc-pending-data';
+const BASE       = '/LHC-Worship-App';
+const REQUIRED   = [BASE + '/index.html', BASE + '/manifest.json'];
+const OPTIONAL   = [BASE + '/icons/icon.svg', BASE + '/icons/icon-192.png', BASE + '/icons/icon-512.png', BASE + '/icons/apple-touch-icon.png'];
 
-// ── Install: cache shell assets ──────────────────────────────────────────────
+// ── Install ───────────────────────────────────────────────────────────────────
 self.addEventListener('install', e => {
   e.waitUntil(
     caches.open(CACHE).then(async c => {
@@ -15,45 +15,39 @@ self.addEventListener('install', e => {
   self.skipWaiting();
 });
 
-// ── Activate: purge old caches ───────────────────────────────────────────────
+// ── Activate: purge old caches ────────────────────────────────────────────────
 self.addEventListener('activate', e => {
   e.waitUntil(
     caches.keys().then(keys =>
-      Promise.all(
-        keys
-          .filter(k => k !== CACHE && k !== DATA_CACHE)
-          .map(k => caches.delete(k))
-      )
+      Promise.all(keys.filter(k => k !== CACHE && k !== DATA_CACHE).map(k => caches.delete(k)))
     )
   );
   self.clients.claim();
 });
 
-// ── Persist pending file across SW restarts via Cache API ────────────────────
-// (in-memory var is lost if the SW is killed between the POST and the GET poll)
-async function storePendingFile(data) {
+// ── Cache helpers for pending share/file data ─────────────────────────────────
+// Using Cache API so data survives SW restarts (in-memory vars get wiped).
+
+async function _cacheStore(key, data) {
   const c = await caches.open(DATA_CACHE);
-  await c.put(
-    BASE + '/_pending-file-store',
-    new Response(JSON.stringify(data), { headers: { 'Content-Type': 'application/json' } })
-  );
+  await c.put(BASE + key, new Response(JSON.stringify(data), { headers: { 'Content-Type': 'application/json' } }));
 }
 
-async function consumePendingFile() {
+async function _cacheConsume(key) {
   const c    = await caches.open(DATA_CACHE);
-  const resp = await c.match(BASE + '/_pending-file-store');
+  const resp = await c.match(BASE + key);
   if (!resp) return null;
   const data = await resp.json().catch(() => null);
-  await c.delete(BASE + '/_pending-file-store');
+  await c.delete(BASE + key);
   return data;
 }
 
-// ── Fetch handler ────────────────────────────────────────────────────────────
+// ── Fetch handler ─────────────────────────────────────────────────────────────
 self.addEventListener('fetch', e => {
   const url = new URL(e.request.url);
 
-  // ── Web Share Target POST ──────────────────────────────────────────────────
-  // Android fires this when the user taps "LHC Worship Prep" in any app's share sheet.
+  // ── Web Share Target POST ─────────────────────────────────────────────────
+  // Android fires this POST when the user picks "LHC Worship Prep" in any share sheet.
   if (url.pathname === BASE + '/share-handler' && e.request.method === 'POST') {
     e.respondWith((async () => {
       try {
@@ -63,42 +57,66 @@ self.addEventListener('fetch', e => {
         const shareText  = (fd.get('share_text')  || '').trim();
         const files      = fd.getAll('share_files');
 
-        const redirect = new URL(BASE + '/', self.location.origin);
+        // Find an already-open app window (app alive in background)
+        const allClients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+        const liveClient = allClients.find(c =>
+          c.url.startsWith(self.location.origin + BASE) && !c.url.includes('share-handler')
+        );
 
         if (files && files.length > 0) {
-          const file = files[0];
+          // ── File share ──────────────────────────────────────────────────────
+          const file    = files[0];
+          let   fileData;
           if (file.size <= 8 * 1024 * 1024) {
             const b64 = _bufferToBase64(await file.arrayBuffer());
-            await storePendingFile({
-              name:    file.name,
-              type:    file.type,
-              size:    file.size,
-              title:   shareTitle || file.name,
-              data:    'data:' + file.type + ';base64,' + b64,
-              addedAt: new Date().toISOString()
-            });
+            fileData  = { shareType: 'file', name: file.name, mimeType: file.type,
+                          size: file.size, title: shareTitle || file.name,
+                          data: 'data:' + file.type + ';base64,' + b64, addedAt: new Date().toISOString() };
           } else {
-            await storePendingFile({
-              name: file.name, type: file.type, size: file.size,
-              title: shareTitle || file.name, data: null,
-              addedAt: new Date().toISOString()
-            });
+            fileData = { shareType: 'file', name: file.name, mimeType: file.type,
+                         size: file.size, title: shareTitle || file.name, data: null,
+                         addedAt: new Date().toISOString() };
           }
-          redirect.searchParams.set('shareFile',  '1');
-          redirect.searchParams.set('shareName',  file.name);
-          redirect.searchParams.set('shareType',  file.type);
-          redirect.searchParams.set('shareTitle', shareTitle || file.name);
+
+          await _cacheStore('/_pending-share', fileData);
+
+          if (liveClient) {
+            // App is alive — wake it with a hash change (NO full reload)
+            liveClient.postMessage({ type: 'lhc-bg-share', ...fileData });
+            try { await liveClient.focus(); } catch(_) {}
+            return Response.redirect(_wakeUrl(liveClient.url), 303);
+          }
+
+          // Cold start — use URL params + file in cache
+          const r = new URL(BASE + '/', self.location.origin);
+          r.searchParams.set('shareFile',  '1');
+          r.searchParams.set('shareName',  file.name);
+          r.searchParams.set('shareType',  file.type);
+          r.searchParams.set('shareTitle', shareTitle || file.name);
+          r.searchParams.set('view', 'worshipOrderView');
+          return Response.redirect(r.toString(), 303);
+
         } else {
-          // URL / text share — pass as query params (survives SW restarts automatically)
-          if (shareUrl)   redirect.searchParams.set('share_url',   shareUrl);
-          if (shareTitle) redirect.searchParams.set('share_title', shareTitle);
-          if (shareText)  redirect.searchParams.set('share_text',  shareText);
+          // ── URL / text share ────────────────────────────────────────────────
+          const sharePayload = { shareType: 'url', url: shareUrl, title: shareTitle,
+                                 text: shareText, addedAt: new Date().toISOString() };
+          await _cacheStore('/_pending-share', sharePayload);
+
+          if (liveClient) {
+            // App is alive — wake with hash, no reload
+            liveClient.postMessage({ type: 'lhc-bg-share', ...sharePayload });
+            try { await liveClient.focus(); } catch(_) {}
+            return Response.redirect(_wakeUrl(liveClient.url), 303);
+          }
+
+          // Cold start — URL params
+          const r = new URL(BASE + '/', self.location.origin);
+          if (shareUrl)   r.searchParams.set('share_url',   shareUrl);
+          if (shareTitle) r.searchParams.set('share_title', shareTitle);
+          if (shareText)  r.searchParams.set('share_text',  shareText);
+          r.searchParams.set('view', 'worshipOrderView');
+          return Response.redirect(r.toString(), 303);
         }
-
-        // Always land on the Orders view when a share arrives
-        redirect.searchParams.set('view', 'worshipOrderView');
-
-        return Response.redirect(redirect.toString(), 303);
       } catch (err) {
         return Response.redirect(BASE + '/?shareError=1', 303);
       }
@@ -106,17 +124,29 @@ self.addEventListener('fetch', e => {
     return;
   }
 
-  // ── Pending-file poll (main page calls this after a file share redirect) ──
-  if (url.pathname === BASE + '/pending-share-file') {
+  // ── pending-share poll (shell fetches this after hash-wake or cold start) ──
+  if (url.pathname === BASE + '/pending-share') {
     e.respondWith(
-      consumePendingFile().then(data =>
-        new Response(JSON.stringify(data), { headers: { 'Content-Type': 'application/json' } })
+      _cacheConsume('/_pending-share').then(d =>
+        new Response(JSON.stringify(d), { headers: { 'Content-Type': 'application/json' } })
       )
     );
     return;
   }
 
-  // ── SW version ping (shell uses this to detect when a new SW is active) ──
+  // ── Legacy: pending-share-file (kept for backward compat) ─────────────────
+  if (url.pathname === BASE + '/pending-share-file') {
+    e.respondWith(
+      _cacheConsume('/_pending-share').then(d => {
+        // Only return if it was a file share
+        const fileData = d && d.shareType === 'file' ? d : null;
+        return new Response(JSON.stringify(fileData), { headers: { 'Content-Type': 'application/json' } });
+      })
+    );
+    return;
+  }
+
+  // ── SW version endpoint ────────────────────────────────────────────────────
   if (url.pathname === BASE + '/sw-version') {
     e.respondWith(new Response(JSON.stringify({ version: CACHE }), {
       headers: { 'Content-Type': 'application/json' }
@@ -124,10 +154,10 @@ self.addEventListener('fetch', e => {
     return;
   }
 
-  // ── Pass Google / GAS requests straight through ────────────────────────────
+  // ── Pass Google / GAS traffic straight through ─────────────────────────────
   if (url.hostname.includes('google') || url.hostname.includes('gstatic')) return;
 
-  // ── Cache-first for shell assets; offline fallback for navigations ─────────
+  // ── Cache-first for shell assets ───────────────────────────────────────────
   e.respondWith(
     caches.match(e.request).then(hit => {
       if (hit) return hit;
@@ -137,8 +167,7 @@ self.addEventListener('fetch', e => {
 });
 
 // ── Periodic Background Sync ──────────────────────────────────────────────────
-// Registered once a day from the shell. Keeps the SW in the OS share-target
-// registry and lets us do light background work (cache refresh, etc.).
+// Keeps SW fresh and the app listed in Android's share-target registry.
 self.addEventListener('periodicsync', e => {
   if (e.tag === 'lhc-heartbeat') {
     e.waitUntil(
@@ -151,29 +180,26 @@ self.addEventListener('periodicsync', e => {
   }
 });
 
-// ── Background Sync (one-shot retry for failed share saves) ──────────────────
+// ── Background Sync ────────────────────────────────────────────────────────────
 self.addEventListener('sync', e => {
   if (e.tag === 'lhc-retry-share') {
     e.waitUntil(
-      self.clients.matchAll().then(clients => {
-        clients.forEach(c => c.postMessage({ type: 'lhc-retry-share' }));
-      })
+      self.clients.matchAll().then(clients =>
+        clients.forEach(c => c.postMessage({ type: 'lhc-retry-share' }))
+      )
     );
   }
 });
 
-// ── Message handler (keepalive ping from the shell tab) ──────────────────────
-// Receiving a message prevents the OS from killing an idle SW.
+// ── Message handler (ping keepalive + skipWaiting) ─────────────────────────────
 self.addEventListener('message', e => {
   if (e.data && e.data.type === 'ping') {
     e.ports && e.ports[0] && e.ports[0].postMessage({ type: 'pong', version: CACHE });
   }
-  if (e.data && e.data.type === 'skipWaiting') {
-    self.skipWaiting();
-  }
+  if (e.data && e.data.type === 'skipWaiting') self.skipWaiting();
 });
 
-// ── Notification click (required to keep SW eligible for share target) ────────
+// ── Notification click ─────────────────────────────────────────────────────────
 self.addEventListener('notificationclick', e => {
   e.notification.close();
   e.waitUntil(
@@ -184,7 +210,12 @@ self.addEventListener('notificationclick', e => {
   );
 });
 
-// ── Helper ───────────────────────────────────────────────────────────────────
+// ── Helpers ────────────────────────────────────────────────────────────────────
+function _wakeUrl(currentUrl) {
+  // Hash change wakes the existing tab without a full reload
+  return currentUrl.split('#')[0] + '#incoming-share';
+}
+
 function _bufferToBase64(buffer) {
   var binary = '', bytes = new Uint8Array(buffer), chunk = 8192;
   for (var i = 0; i < bytes.byteLength; i += chunk)

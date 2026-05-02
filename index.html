@@ -216,25 +216,30 @@
       return url.toString();
     }
 
-    frame.src = buildGasUrl();
-    if (isShare) showStatus('Opening worship order…', 'info');
+    // ── Detect if this load was triggered by a hash-wake (app was alive) ─────
+    // A hash-wake means the GAS iframe is ALREADY loaded — don't reload it.
+    const isHashWake = location.hash === '#incoming-share';
+    if (isHashWake) history.replaceState(null, '', location.pathname + location.search);
 
-    // ── Relay share into GAS iframe via postMessage ───────────────────
-    // The GAS app signals readiness with lhc-app-ready; we also retry
-    // on a short interval in case the message arrives before the signal.
+    if (!isHashWake) {
+      // Normal load: set iframe src and show splash
+      frame.src = buildGasUrl();
+      if (isShare) showStatus('Opening worship order…', 'info');
+    } else {
+      // Hash-wake: iframe is already live, no splash needed
+      splash.classList.add('fade-out');
+    }
+
+    // ── Relay share data into the GAS iframe ─────────────────────────
     function relayShareToFrame(shareData) {
       if (!shareData) return;
-      let attempts = 0;
-      let gasReady = false;
-
-      // Start retrying immediately
+      showStatus('Opening worship order…', 'info');
+      let attempts = 0, gasReady = false;
       const relay = setInterval(() => {
         attempts++;
         if (attempts > 40) { clearInterval(relay); return; }
         try { frame.contentWindow.postMessage(shareData, '*'); } catch(e) {}
-      }, 1000);
-
-      // Once GAS app signals ready, send immediately and stop interval
+      }, 800);
       window.addEventListener('message', function onReady(ev) {
         if (ev.data && ev.data.type === 'lhc-app-ready' && !gasReady) {
           gasReady = true;
@@ -248,7 +253,48 @@
       });
     }
 
-    // ── After iframe loads, dispatch share payload ────────────────────
+    // ── Convert raw SW/cache payload → relayShareToFrame format ──────
+    function dispatchSharePayload(d) {
+      if (!d) return;
+      if (d.shareType === 'file') {
+        relayShareToFrame({ type: 'lhc-share-file', name: d.name, mimeType: d.mimeType,
+          size: d.size, title: d.title, data: d.data, addedAt: d.addedAt });
+      } else {
+        relayShareToFrame({ type: 'lhc-share-inbox', url: d.url,
+          title: d.title, text: d.text });
+      }
+    }
+
+    // ── Fetch pending share from SW cache (hash-wake or cold start) ───
+    async function checkPendingShare() {
+      try {
+        const res  = await fetch('/LHC-Worship-App/pending-share');
+        const data = await res.json();
+        if (data) dispatchSharePayload(data);
+      } catch(e) {}
+    }
+
+    // ── Hash-wake: share arrived while app was alive ──────────────────
+    // Android navigates to #incoming-share; we handle here without reload.
+    window.addEventListener('hashchange', () => {
+      if (location.hash === '#incoming-share') {
+        history.replaceState(null, '', location.pathname + location.search);
+        checkPendingShare();
+      }
+    });
+
+    // ── SW → shell direct message (arrives before hash change) ───────
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.addEventListener('message', event => {
+        const d = event.data;
+        if (d && d.type === 'lhc-bg-share') dispatchSharePayload(d);
+      });
+    }
+
+    // ── If this was a hash-wake, fetch any pending share from cache ───
+    if (isHashWake) checkPendingShare();
+
+    // ── After iframe loads on a normal cold start ─────────────────────
     frame.addEventListener('load', async () => {
       setTimeout(async () => {
         splash.classList.add('fade-out');
@@ -256,22 +302,18 @@
 
         if (shareFile) {
           try {
-            const res      = await fetch('/LHC-Worship-App/pending-share-file');
+            const res      = await fetch('/LHC-Worship-App/pending-share');
             const fileData = await res.json();
-            relayShareToFrame(fileData ? {
-              type: 'lhc-share-file', name: fileData.name, mimeType: fileData.type,
-              size: fileData.size, title: fileData.title, data: fileData.data,
-              addedAt: fileData.addedAt
-            } : {
-              type: 'lhc-share-file', name: shareName, mimeType: shareType,
+            dispatchSharePayload(fileData || {
+              shareType: 'file', name: shareName, mimeType: shareType,
               title: shareFileTitleParam || shareName, data: null
             });
           } catch(e) {
-            relayShareToFrame({ type: 'lhc-share-file', name: shareName,
+            dispatchSharePayload({ shareType: 'file', name: shareName,
               mimeType: shareType, title: shareFileTitleParam || shareName, data: null });
           }
         } else if (shareUrl) {
-          relayShareToFrame({ type: 'lhc-share-inbox', url: shareUrl,
+          dispatchSharePayload({ shareType: 'url', url: shareUrl,
             title: shareTitle, text: shareText });
         }
       }, 300);
