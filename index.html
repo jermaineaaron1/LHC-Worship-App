@@ -115,9 +115,8 @@
   ></iframe>
 
   <script>
-    // ── CONFIG — replace with your deployed GAS web-app URL ──────────
+    // ── CONFIG ────────────────────────────────────────────────────────
     const GAS_URL = 'https://script.google.com/macros/s/AKfycbxsDkOtx25DrSROQg_eVR33RdQdPbFB3NGfhWqkCC3YIw2LLXRBKdfPaA77ljSmtpjU/exec';
-    // ─────────────────────────────────────────────────────────────────
 
     const frame     = document.getElementById('appFrame');
     const splash    = document.getElementById('splash');
@@ -129,27 +128,40 @@
       statusBar.style.display = 'block';
     }
 
-    // ── Parse incoming URL params ─────────────────────────────────────
+    // ── Parse URL params ──────────────────────────────────────────────
     const params = new URLSearchParams(window.location.search);
 
-    // Web Share Target params (set by manifest share_target)
+    // URL / text share (GET, from share-handler redirect)
     const shareUrl   = params.get('share_url')   || '';
     const shareTitle = params.get('share_title') || '';
     const shareText  = params.get('share_text')  || '';
 
-    // ── Build the GAS URL, forwarding all relevant params ─────────────
+    // File share (GET redirect from service worker after POST)
+    const shareFile  = params.get('shareFile')  || '';   // '1' if a file was shared
+    const shareName  = params.get('shareName')  || '';
+    const shareType  = params.get('shareType')  || '';
+    const shareFileTitleParam = params.get('shareTitle') || '';
+
+    const isShare = !!(shareUrl || shareFile);
+
+    // ── Build the GAS URL, forwarding deep-link params ────────────────
     function buildGasUrl() {
       const url = new URL(GAS_URL);
 
-      // Inject share-inbox params so GAS shows the order picker
+      // URL shares: inject shareInbox params so GAS can also read them
       if (shareUrl)   url.searchParams.set('shareInbox', shareUrl);
       if (shareTitle) url.searchParams.set('shareTitle', shareTitle);
       if (shareText)  url.searchParams.set('shareText',  shareText);
 
+      // For shares, always land on the Orders view
+      if (isShare) url.searchParams.set('view', 'worshipOrderView');
+
       // Forward existing deep-link params transparently
-      ['view','order','date','dname','song','playlist','sb','media'].forEach(key => {
+      ['order','date','dname','song','playlist','sb','media'].forEach(key => {
         if (params.has(key)) url.searchParams.set(key, params.get(key));
       });
+      // Forward non-share view params if no share is happening
+      if (!isShare && params.has('view')) url.searchParams.set('view', params.get('view'));
 
       return url.toString();
     }
@@ -157,55 +169,94 @@
     // ── Load the app ──────────────────────────────────────────────────
     frame.src = buildGasUrl();
 
-    // Show share notification if applicable
-    if (shareUrl) {
-      showStatus('📎 Sharing link to your worship order…', 'info');
-    }
+    if (isShare) showStatus('Sharing to your worship order…', 'info');
 
-    // ── postMessage relay: send share data into the GAS iframe ────────
-    // This is more reliable than URL params → GAS template variables,
-    // because it works regardless of GAS caching or deployment version.
-    function relayShareToFrame() {
-      if (!shareUrl) return;
+    // ── Relay share data into the GAS iframe via postMessage ──────────
+    // Runs after iframe loads; retries until GAS app is ready.
+    function relayShareToFrame(shareData) {
+      if (!shareData) return;
       var attempts = 0;
       var relay = setInterval(function() {
         attempts++;
-        if (attempts > 20) { clearInterval(relay); return; }
-        try {
-          frame.contentWindow.postMessage({
-            type: 'lhc-share-inbox',
+        if (attempts > 30) { clearInterval(relay); return; }
+        try { frame.contentWindow.postMessage(shareData, '*'); } catch(e) {}
+      }, 1200);
+      // Stop retrying once GAS app acknowledges
+      window.addEventListener('message', function ack(ev) {
+        if (ev.data && ev.data.type === 'lhc-share-received') {
+          clearInterval(relay);
+          window.removeEventListener('message', ack);
+          statusBar.style.display = 'none';
+        }
+      });
+    }
+
+    // ── After iframe loads, determine what to relay ───────────────────
+    frame.addEventListener('load', async () => {
+      setTimeout(async () => {
+        splash.classList.add('fade-out');
+        if (!isShare) { statusBar.style.display = 'none'; return; }
+
+        if (shareFile) {
+          // File share — retrieve from service worker cache
+          try {
+            const res      = await fetch('/LHC-Worship-App/pending-share-file');
+            const fileData = await res.json();
+            if (fileData) {
+              relayShareToFrame({
+                type:  'lhc-share-file',
+                name:  fileData.name,
+                mimeType: fileData.type,
+                size:  fileData.size,
+                title: fileData.title,
+                data:  fileData.data,     // data URL (base64) or null if too large
+                addedAt: fileData.addedAt
+              });
+            } else {
+              // Fallback: relay just the metadata we have from URL params
+              relayShareToFrame({
+                type:  'lhc-share-file',
+                name:  shareName,
+                mimeType: shareType,
+                title: shareFileTitleParam || shareName,
+                data:  null
+              });
+            }
+          } catch(e) {
+            relayShareToFrame({
+              type:  'lhc-share-file',
+              name:  shareName,
+              mimeType: shareType,
+              title: shareFileTitleParam || shareName,
+              data:  null
+            });
+          }
+        } else if (shareUrl) {
+          relayShareToFrame({
+            type:  'lhc-share-inbox',
             url:   shareUrl,
             title: shareTitle,
             text:  shareText
-          }, '*');
-        } catch(e) {}
-      }, 1500);
-    }
-
-    // Hide splash once iframe content has loaded
-    frame.addEventListener('load', () => {
-      setTimeout(() => {
-        splash.classList.add('fade-out');
-        if (!shareUrl) statusBar.style.display = 'none';
-        // Start relaying share data once iframe is loaded
-        relayShareToFrame();
+          });
+        }
       }, 350);
     });
-    // Hard timeout in case load event doesn't fire (cross-origin)
+
+    // Hard timeout fallback
     setTimeout(() => splash.classList.add('fade-out'), 9000);
 
     // ── Offline detection ─────────────────────────────────────────────
     window.addEventListener('offline', () => showStatus('You are offline. Some features may not be available.'));
     window.addEventListener('online',  () => { statusBar.style.display = 'none'; });
 
-    // ── Messages from the GAS iframe (postMessage bridge) ────────────
+    // ── Messages from the GAS iframe ─────────────────────────────────
     window.addEventListener('message', (event) => {
       if (!event.origin.includes('script.google.com') &&
           !event.origin.includes('googleusercontent.com')) return;
       const d = event.data;
       if (!d || typeof d !== 'object') return;
-      if (d.type === 'lhc-title')  document.title = d.title || 'LHC Worship Prep';
-      if (d.type === 'lhc-status') showStatus(d.message, d.level);
+      if (d.type === 'lhc-title')       document.title = d.title || 'LHC Worship Prep';
+      if (d.type === 'lhc-status')      showStatus(d.message, d.level);
       if (d.type === 'lhc-status-clear') statusBar.style.display = 'none';
     });
 

@@ -30,13 +30,19 @@
     }
   ],
   "share_target": {
-    "action": "/LHC-Worship-App/",
-    "method": "GET",
-    "enctype": "application/x-www-form-urlencoded",
+    "action": "/LHC-Worship-App/share-handler",
+    "method": "POST",
+    "enctype": "multipart/form-data",
     "params": {
       "title": "share_title",
       "text":  "share_text",
-      "url":   "share_url"
+      "url":   "share_url",
+      "files": [
+        {
+          "name": "share_files",
+          "accept": ["image/*", "audio/*", "video/*", "application/pdf"]
+        }
+      ]
     }
   },
   "shortcuts": [
