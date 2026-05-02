@@ -162,11 +162,33 @@
       showStatus('📎 Sharing link to your worship order…', 'info');
     }
 
+    // ── postMessage relay: send share data into the GAS iframe ────────
+    // This is more reliable than URL params → GAS template variables,
+    // because it works regardless of GAS caching or deployment version.
+    function relayShareToFrame() {
+      if (!shareUrl) return;
+      var attempts = 0;
+      var relay = setInterval(function() {
+        attempts++;
+        if (attempts > 20) { clearInterval(relay); return; }
+        try {
+          frame.contentWindow.postMessage({
+            type: 'lhc-share-inbox',
+            url:   shareUrl,
+            title: shareTitle,
+            text:  shareText
+          }, '*');
+        } catch(e) {}
+      }, 1500);
+    }
+
     // Hide splash once iframe content has loaded
     frame.addEventListener('load', () => {
       setTimeout(() => {
         splash.classList.add('fade-out');
         if (!shareUrl) statusBar.style.display = 'none';
+        // Start relaying share data once iframe is loaded
+        relayShareToFrame();
       }, 350);
     });
     // Hard timeout in case load event doesn't fire (cross-origin)
