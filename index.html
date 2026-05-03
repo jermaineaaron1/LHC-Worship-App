@@ -145,7 +145,7 @@
       </g>
     </svg>
     <div class="splash-title">LHC Worship Prep</div>
-    <div class="splash-sub">Luther House Chapel</div>
+    <div class="splash-sub" id="splashSub">Luther House Chapel</div>
     <div class="splash-spinner"></div>
   </div>
 
@@ -221,17 +221,25 @@
     const isHashWake = location.hash === '#incoming-share';
     if (isHashWake) history.replaceState(null, '', location.pathname + location.search);
 
+    // ── Splash helpers ────────────────────────────────────────────────
+    let _splashDone = false;
+    function hideSplash() {
+      if (_splashDone) return;
+      _splashDone = true;
+      splash.classList.add('fade-out');
+    }
+
     if (!isHashWake) {
-      // Normal load: set iframe src and show splash
+      // Normal load: set iframe src
       frame.src = buildGasUrl();
       if (isShare) {
-      showStatus('Opening worship order…', 'info');
-      // Fallback: hide status after 6 s even if lhc-share-received never arrives
-      setTimeout(function() { statusBar.style.display = 'none'; }, 6000);
-    }
+        const sub = document.getElementById('splashSub');
+        if (sub) sub.textContent = 'Opening worship order…';
+        showStatus('Opening worship order…', 'info');
+      }
     } else {
       // Hash-wake: iframe is already live, no splash needed
-      splash.classList.add('fade-out');
+      hideSplash();
     }
 
     // ── Relay share data into the GAS iframe ─────────────────────────
@@ -243,17 +251,19 @@
       try { frame.contentWindow.postMessage(shareData, '*'); } catch(e) {}
       const relay = setInterval(() => {
         attempts++;
-        if (attempts > 40) { clearInterval(relay); return; }
+        if (attempts > 60) { clearInterval(relay); hideSplash(); statusBar.style.display = 'none'; return; }
         try { frame.contentWindow.postMessage(shareData, '*'); } catch(e) {}
       }, 800);
       window.addEventListener('message', function onReady(ev) {
         if (ev.data && ev.data.type === 'lhc-app-ready' && !gasReady) {
           gasReady = true;
+          hideSplash();
           try { frame.contentWindow.postMessage(shareData, '*'); } catch(e) {}
         }
         if (ev.data && ev.data.type === 'lhc-share-received') {
           clearInterval(relay);
           window.removeEventListener('message', onReady);
+          hideSplash();
           statusBar.style.display = 'none';
         }
       });
@@ -302,10 +312,14 @@
 
     // ── After iframe loads on a normal cold start ─────────────────────
     frame.addEventListener('load', async () => {
+      if (!isShare) {
+        // Non-share: fade splash promptly once frame is loaded
+        setTimeout(() => { hideSplash(); statusBar.style.display = 'none'; }, 300);
+        return;
+      }
+      // Share launch: don't hide splash here — relayShareToFrame will hide it
+      // once lhc-app-ready arrives. Just start the relay.
       setTimeout(async () => {
-        splash.classList.add('fade-out');
-        if (!isShare) { statusBar.style.display = 'none'; return; }
-
         if (shareFile) {
           try {
             const res      = await fetch('/LHC-Worship-App/pending-share');
@@ -325,8 +339,8 @@
       }, 300);
     });
 
-    // Hard timeout fallback for splash
-    setTimeout(() => splash.classList.add('fade-out'), 10000);
+    // Hard timeout fallback for splash (30s — GAS cold starts can be slow)
+    setTimeout(() => { hideSplash(); statusBar.style.display = 'none'; }, 30000);
 
     // ── Messages from GAS iframe ──────────────────────────────────────
     window.addEventListener('message', (event) => {
@@ -334,6 +348,7 @@
           !event.origin.includes('googleusercontent.com')) return;
       const d = event.data;
       if (!d || typeof d !== 'object') return;
+      if (d.type === 'lhc-app-ready')    hideSplash();           // GAS is loaded — reveal it
       if (d.type === 'lhc-title')        document.title = d.title || 'LHC Worship Prep';
       if (d.type === 'lhc-status')       showStatus(d.message, d.level);
       if (d.type === 'lhc-status-clear') statusBar.style.display = 'none';
