@@ -239,6 +239,8 @@
       if (!shareData) return;
       showStatus('Opening worship order…', 'info');
       let attempts = 0, gasReady = false;
+      // Send once immediately in case the app is already loaded
+      try { frame.contentWindow.postMessage(shareData, '*'); } catch(e) {}
       const relay = setInterval(() => {
         attempts++;
         if (attempts > 40) { clearInterval(relay); return; }
